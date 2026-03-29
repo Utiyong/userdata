@@ -43,7 +43,16 @@ const schema = new mongoose.Schema({
             // required: true
         }
     },
-    
+    isVerified: {
+        type: Boolean,
+        trim: true,
+        required:false
+
+    }, 
+    otpExpiresAt:{
+        type: Date,
+        default: () => new Date(Date.now() + 5 * 60 * 1000)
+    },
 })
 
 const user = mongoose.model('newdata', schema)

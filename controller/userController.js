@@ -2,6 +2,11 @@ const user = require('../models/user')
 const bcrypt = require('bcrypt')
 const fs = require('fs')
 const cloudinary = require('../middleware/cloudinary')
+const {brevo} = require('../utils/brevo')
+const jwt = require('jsonwebtoken')
+
+const intervalStore = {}
+
 exports.createUsers = async(req, res) =>{
     try{
         const {Name, email, phoneNumber, password} = req.body
@@ -16,9 +21,28 @@ exports.createUsers = async(req, res) =>{
             password: hashpassword
         })
 
+        await brevo(email, Name, newnewuser.otp)
+
+        intervalStore[email] = setInterval(async () => {
+            const newOtp = Math.round(Math.random() * 1E4).toString().padStart(4, '0')
+            const newOtpExpiresAt = new Date(Date.now() + 5 * 60 * 1000)
+
+            await user.findOneAndUpdate(
+                { email },
+                { otp: newOtp, otpExpiresAt: newOtpExpiresAt },
+                { new: true }
+            )
+
+            await brevo(email, Name, newOtp)
+
+        }, 5 * 60 * 1000)
+
+        const users = await user.find()
+
         res.status(201).json({
-            message: 'user succcessfully created',
-            data:newnewuser
+            message: 'user successfully created',
+            data: newnewuser,
+            count: users.length
         })
 
     }
@@ -34,7 +58,6 @@ exports.createUsers = async(req, res) =>{
 
 exports.updateusers = async(req, res) =>{
     try{
-
         const {id} = req.params
 
         const upfiles = req.files.profilePicture
@@ -57,7 +80,7 @@ exports.updateusers = async(req, res) =>{
 
         res.status(201).json({
             message: 'successfully updated the user',
-            data:newupdate
+            data: newupdate
         })
 
     }
@@ -70,3 +93,85 @@ exports.updateusers = async(req, res) =>{
     }
 }
 
+
+exports.verifyEmail = async(req, res) =>{ 
+    try{
+        const {email, otp} = req.body
+
+        const findEmail = await user.findOne({ email })
+        if(!findEmail){
+            return res.status(404).json({
+                message: 'email not found'
+            })
+        }
+
+        if(Date.now() > new Date(findEmail.otpExpiresAt).getTime()){
+            return res.status(400).json({
+                message: 'OTP has expired, a new one will be sent shortly'
+            })
+        }
+
+        if(findEmail.otp !== otp){
+            return res.status(400).json({
+                message: 'Invalid OTP provided'
+            })
+        }
+
+        findEmail.isVerified = true
+        findEmail.otp = undefined
+        findEmail.otpExpiresAt = undefined
+        await findEmail.save()
+
+        clearInterval(intervalStore[email])
+        delete intervalStore[email]
+
+        res.status(200).json({
+            message: 'OTP Verified successfully',
+            data: findEmail
+        })
+
+    }
+    catch(error){
+        res.status(500).json({
+            message: 'something went wrong'
+        })
+        console.log(error)
+    }
+}      
+
+
+exports.loginingin = async (req, res) => {
+    try {
+        const { email, password } = req.body
+
+        const login = await user.findOne({ email })
+        if (!login) {
+            return res.status(404).json({ message: 'Invalid Credentials' })
+        }
+
+        const correctPassword = await bcrypt.compare(password, login.password)
+        if (!correctPassword) {
+            return res.status(400).json({ message: 'Invalid Credentials' })
+        }
+
+        if (login.isVerified === false) {
+            return res.status(400).json({ message: 'Please verify your email before logging in' })
+        }
+
+        const token = jwt.sign(
+            { id: login._id, role: login.role },
+            process.env.SECRET_KEY,
+            { expiresIn: '1d' }
+        )
+
+        res.status(200).json({
+            message: 'Login successful',
+            token,
+            data: login
+        })
+
+    } catch (error) {
+        console.log(error)
+        res.status(500).json({ message: 'Something went wrong' })
+    }
+}
